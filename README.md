@@ -5,20 +5,37 @@ It provides a basic implementation of all required artifact operations.
 
 ## Prerequisites
 
-- Go 1.21 or later
+- Go 1.24.4 or later
 - Protocol Buffers compiler (`protoc`)
 - Make
+- Docker
 
 ## Installation
 
-1. Install the required Go dependencies:
+## Development Environment
+
+This project uses [devenv](https://devenv.sh/) to manage the development environment.
+
+### Setup
+
+1. Install devenv:
+
 ```bash
-make deps
+nix profile install --accept-flake-config github:cachix/devenv/latest
 ```
 
-2. Build the project:
+2. Install the project dependencies:
+
+
 ```bash
-make build
+devenv up
+```
+
+### Build
+
+1. Build the project:
+```bash
+make artifact-server
 ```
 
 This will:
@@ -78,9 +95,3 @@ To clean build artifacts:
 ```bash
 make clean
 ```
-
-To regenerate protobuf code:
-
-```bash
-make generate
-``` 
