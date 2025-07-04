@@ -1,0 +1,12 @@
+# Build artifacts
+artifact-server
+*.pb.go
+proto/
+
+# Development files
+.devenv/
+.direnv/
+.envrc
+
+# Temporary files
+*~
