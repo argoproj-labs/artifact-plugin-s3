@@ -25,16 +25,18 @@ proto/artifact.proto: proto/google/api/annotations.proto proto/google/api/http.p
 	@curl -s -o $@ https://raw.githubusercontent.com/pipekit/argo-workflows/refs/heads/artifact-plugins/pkg/apiclient/artifact/artifact.proto
 
 # Generate Go code from proto
-artifact.pb.go: proto/artifact.proto
+pkg/artifact/artifact.pb.go: proto/artifact.proto Makefile
 	@echo "Generating Go code from proto..."
-	@protoc -I proto --go_out=. --go_opt=paths=source_relative $<
+	@mkdir -p pkg/artifact
+	@protoc -I proto --go_out=pkg/artifact --go_opt=paths=source_relative --go_opt=Mproto/artifact.proto=. $<
 
-artifact_grpc.pb.go: proto/artifact.proto
+pkg/artifact/artifact_grpc.pb.go: proto/artifact.proto Makefile
 	@echo "Generating gRPC Go code from proto..."
-	@protoc -I proto --go-grpc_out=. --go-grpc_opt=paths=source_relative $<
+	@mkdir -p pkg/artifact
+	@protoc -I proto --go-grpc_out=pkg/artifact --go-grpc_opt=paths=source_relative --go-grpc_opt=Mproto/artifact.proto=. $<
 
 # Build the binary
-artifact-server: artifact.pb.go artifact_grpc.pb.go main.go
+artifact-server: pkg/artifact/artifact.pb.go pkg/artifact/artifact_grpc.pb.go main.go
 	@echo "Building artifact plugin server..."
 	@CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -ldflags="-s -w" -o $@ main.go
 
@@ -42,8 +44,8 @@ artifact-server: artifact.pb.go artifact_grpc.pb.go main.go
 clean:
 	@echo "Cleaning build artifacts..."
 	@rm -rf proto/
+	@rm -rf pkg/
 	@rm -f artifact-server
-	@rm -f *.pb.go
 
 # Run the server (requires socket path argument)
 run: artifact-server
