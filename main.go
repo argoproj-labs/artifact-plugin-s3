@@ -12,6 +12,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	"github.com/pipekit/artifact-plugin-s3/pkg/artifact"
+	"github.com/pipekit/artifact-plugin-s3/pkg/s3"
 )
 
 type artifactServer struct {
@@ -28,7 +29,36 @@ func (s *artifactServer) Load(ctx context.Context, req *artifact.LoadArtifactReq
 		}, nil
 	}
 
-	log.Printf("Loading artifact from %s to %s", req.InputArtifact.Url, req.Path)
+	if req.InputArtifact.ArtifactLocation == nil || req.InputArtifact.ArtifactLocation.S3 == nil {
+		return &artifact.LoadArtifactResponse{
+			Success: false,
+			Error:   "S3 artifact location is required",
+		}, nil
+	}
+
+	// Resolve S3 configuration and credentials
+	s3Config, err := s3.ResolveCredentials(ctx, req.InputArtifact.ArtifactLocation.S3)
+	if err != nil {
+		return &artifact.LoadArtifactResponse{
+			Success: false,
+			Error:   err.Error(),
+		}, nil
+	}
+
+	// Create S3 driver
+	driver := s3.CreateArtifactDriver(s3Config)
+
+	// Convert to Argo artifact format
+	argoArtifact := s3.ConvertToArgoArtifact(req.InputArtifact)
+
+	// Load the artifact
+	err = driver.Load(argoArtifact, req.Path)
+	if err != nil {
+		return &artifact.LoadArtifactResponse{
+			Success: false,
+			Error:   err.Error(),
+		}, nil
+	}
 
 	return &artifact.LoadArtifactResponse{
 		Success: true,
@@ -42,13 +72,52 @@ func (s *artifactServer) OpenStream(req *artifact.OpenStreamRequest, stream arti
 		return status.Error(codes.InvalidArgument, "artifact is required")
 	}
 
-	log.Printf("Opening stream for artifact: %s", req.Artifact.Name)
-
-	response := &artifact.OpenStreamResponse{
-		Data:  []byte("dummy data"),
-		IsEnd: true,
+	if req.Artifact.ArtifactLocation == nil || req.Artifact.ArtifactLocation.S3 == nil {
+		return status.Error(codes.InvalidArgument, "S3 artifact location is required")
 	}
 
+	// Resolve S3 configuration and credentials
+	s3Config, err := s3.ResolveCredentials(stream.Context(), req.Artifact.ArtifactLocation.S3)
+	if err != nil {
+		return status.Error(codes.Internal, err.Error())
+	}
+
+	// Create S3 driver
+	driver := s3.CreateArtifactDriver(s3Config)
+
+	// Convert to Argo artifact format
+	argoArtifact := s3.ConvertToArgoArtifact(req.Artifact)
+
+	// Open stream
+	reader, err := driver.OpenStream(argoArtifact)
+	if err != nil {
+		return status.Error(codes.Internal, err.Error())
+	}
+	defer reader.Close()
+
+	// Stream data in chunks
+	buffer := make([]byte, 1024*1024) // 1MB chunks
+	for {
+		n, err := reader.Read(buffer)
+		if n > 0 {
+			response := &artifact.OpenStreamResponse{
+				Data:  buffer[:n],
+				IsEnd: false,
+			}
+			if err := stream.Send(response); err != nil {
+				return status.Error(codes.Internal, err.Error())
+			}
+		}
+		if err != nil {
+			break
+		}
+	}
+
+	// Send end marker
+	response := &artifact.OpenStreamResponse{
+		Data:  []byte{},
+		IsEnd: true,
+	}
 	return stream.Send(response)
 }
 
@@ -62,7 +131,36 @@ func (s *artifactServer) Save(ctx context.Context, req *artifact.SaveArtifactReq
 		}, nil
 	}
 
-	log.Printf("Saving artifact from %s to %s", req.Path, req.OutputArtifact.Url)
+	if req.OutputArtifact.ArtifactLocation == nil || req.OutputArtifact.ArtifactLocation.S3 == nil {
+		return &artifact.SaveArtifactResponse{
+			Success: false,
+			Error:   "S3 artifact location is required",
+		}, nil
+	}
+
+	// Resolve S3 configuration and credentials
+	s3Config, err := s3.ResolveCredentials(ctx, req.OutputArtifact.ArtifactLocation.S3)
+	if err != nil {
+		return &artifact.SaveArtifactResponse{
+			Success: false,
+			Error:   err.Error(),
+		}, nil
+	}
+
+	// Create S3 driver
+	driver := s3.CreateArtifactDriver(s3Config)
+
+	// Convert to Argo artifact format
+	argoArtifact := s3.ConvertToArgoArtifact(req.OutputArtifact)
+
+	// Save the artifact
+	err = driver.Save(req.Path, argoArtifact)
+	if err != nil {
+		return &artifact.SaveArtifactResponse{
+			Success: false,
+			Error:   err.Error(),
+		}, nil
+	}
 
 	return &artifact.SaveArtifactResponse{
 		Success: true,
@@ -79,7 +177,36 @@ func (s *artifactServer) Delete(ctx context.Context, req *artifact.DeleteArtifac
 		}, nil
 	}
 
-	log.Printf("Deleting artifact: %s", req.Artifact.Name)
+	if req.Artifact.ArtifactLocation == nil || req.Artifact.ArtifactLocation.S3 == nil {
+		return &artifact.DeleteArtifactResponse{
+			Success: false,
+			Error:   "S3 artifact location is required",
+		}, nil
+	}
+
+	// Resolve S3 configuration and credentials
+	s3Config, err := s3.ResolveCredentials(ctx, req.Artifact.ArtifactLocation.S3)
+	if err != nil {
+		return &artifact.DeleteArtifactResponse{
+			Success: false,
+			Error:   err.Error(),
+		}, nil
+	}
+
+	// Create S3 driver
+	driver := s3.CreateArtifactDriver(s3Config)
+
+	// Convert to Argo artifact format
+	argoArtifact := s3.ConvertToArgoArtifact(req.Artifact)
+
+	// Delete the artifact
+	err = driver.Delete(argoArtifact)
+	if err != nil {
+		return &artifact.DeleteArtifactResponse{
+			Success: false,
+			Error:   err.Error(),
+		}, nil
+	}
 
 	return &artifact.DeleteArtifactResponse{
 		Success: true,
@@ -95,10 +222,36 @@ func (s *artifactServer) ListObjects(ctx context.Context, req *artifact.ListObje
 		}, nil
 	}
 
-	log.Printf("Listing objects for artifact: %s", req.Artifact.Name)
+	if req.Artifact.ArtifactLocation == nil || req.Artifact.ArtifactLocation.S3 == nil {
+		return &artifact.ListObjectsResponse{
+			Error: "S3 artifact location is required",
+		}, nil
+	}
+
+	// Resolve S3 configuration and credentials
+	s3Config, err := s3.ResolveCredentials(ctx, req.Artifact.ArtifactLocation.S3)
+	if err != nil {
+		return &artifact.ListObjectsResponse{
+			Error: err.Error(),
+		}, nil
+	}
+
+	// Create S3 driver
+	driver := s3.CreateArtifactDriver(s3Config)
+
+	// Convert to Argo artifact format
+	argoArtifact := s3.ConvertToArgoArtifact(req.Artifact)
+
+	// List objects
+	objects, err := driver.ListObjects(argoArtifact)
+	if err != nil {
+		return &artifact.ListObjectsResponse{
+			Error: err.Error(),
+		}, nil
+	}
 
 	return &artifact.ListObjectsResponse{
-		Objects: []string{"object1", "object2", "object3"},
+		Objects: objects,
 	}, nil
 }
 
@@ -111,10 +264,36 @@ func (s *artifactServer) IsDirectory(ctx context.Context, req *artifact.IsDirect
 		}, nil
 	}
 
-	log.Printf("Checking if artifact is directory: %s", req.Artifact.Name)
+	if req.Artifact.ArtifactLocation == nil || req.Artifact.ArtifactLocation.S3 == nil {
+		return &artifact.IsDirectoryResponse{
+			Error: "S3 artifact location is required",
+		}, nil
+	}
+
+	// Resolve S3 configuration and credentials
+	s3Config, err := s3.ResolveCredentials(ctx, req.Artifact.ArtifactLocation.S3)
+	if err != nil {
+		return &artifact.IsDirectoryResponse{
+			Error: err.Error(),
+		}, nil
+	}
+
+	// Create S3 driver
+	driver := s3.CreateArtifactDriver(s3Config)
+
+	// Convert to Argo artifact format
+	argoArtifact := s3.ConvertToArgoArtifact(req.Artifact)
+
+	// Check if it's a directory
+	isDir, err := driver.IsDirectory(argoArtifact)
+	if err != nil {
+		return &artifact.IsDirectoryResponse{
+			Error: err.Error(),
+		}, nil
+	}
 
 	return &artifact.IsDirectoryResponse{
-		IsDirectory: false,
+		IsDirectory: isDir,
 	}, nil
 }
 
