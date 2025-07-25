@@ -2,6 +2,7 @@
 artifact-server
 *.pb.go
 proto/
+pkg/artifact
 
 # Development files
 .devenv/

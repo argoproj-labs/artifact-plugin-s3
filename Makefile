@@ -36,7 +36,7 @@ pkg/artifact/artifact_grpc.pb.go: proto/artifact.proto Makefile
 	@protoc -I proto --go-grpc_out=pkg/artifact --go-grpc_opt=paths=source_relative --go-grpc_opt=Mproto/artifact.proto=. $<
 
 # Build the binary
-artifact-server: pkg/artifact/artifact.pb.go pkg/artifact/artifact_grpc.pb.go main.go
+artifact-server: lint test pkg/artifact/artifact.pb.go pkg/artifact/artifact_grpc.pb.go main.go
 	@echo "Building artifact plugin server..."
 	@CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -ldflags="-s -w" -o $@ main.go
 
@@ -55,3 +55,14 @@ run: artifact-server
 	fi
 	@echo "Starting artifact plugin server on $(SOCKET)..."
 	@./artifact-server $(SOCKET)
+
+.PHONY: test
+test:
+	@echo "Running tests..."
+	@go test ./...
+
+.PHONY: lint
+lint:
+	@echo "Running lint..."
+	@go vet ./...
+	@go fmt ./...
