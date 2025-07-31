@@ -22,7 +22,7 @@ RUN go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest
 COPY . .
 
 # Build the binary
-RUN make artifact-server
+RUN make -j 4 artifact-server
 
 # Runtime stage
 FROM scratch

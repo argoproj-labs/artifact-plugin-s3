@@ -5,53 +5,68 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/pipekit/artifact-plugin-s3/pkg/artifact"
+	wfv1 "github.com/argoproj/argo-workflows/v3/pkg/apis/workflow/v1alpha1"
+	"github.com/argoproj/argo-workflows/v3/util/logging"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
+	"sigs.k8s.io/yaml"
 )
 
-// S3Config holds resolved S3 configuration with credentials
-type S3Config struct {
-	Endpoint     string
-	Region       string
-	Secure       bool
-	AccessKey    string
-	SecretKey    string
-	SessionToken string
-	RoleARN      string
-	UseSDKCreds  bool
-	Bucket       string
-	Key          string
-}
+// parsePluginConfiguration parses YAML configuration from Plugin.Configuration string
+func parsePluginConfiguration(ctx context.Context, configYAML string) (*wfv1.S3Bucket, error) {
+	var config wfv1.S3Bucket
 
-// extractS3Config converts protobuf S3Artifact to S3Config
-func extractS3Config(s3Artifact *artifact.S3Artifact) *S3Config {
-	if s3Artifact == nil {
-		return nil
+	// Use Kubernetes SIGS YAML which is more compatible with Kubernetes API types
+	err := yaml.UnmarshalStrict([]byte(configYAML), &config)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse plugin configuration: %w", err)
 	}
 
-	return &S3Config{
-		Endpoint:    s3Artifact.Endpoint,
-		Region:      s3Artifact.Region,
-		Secure:      !s3Artifact.Insecure,
-		RoleARN:     s3Artifact.RoleArn,
-		UseSDKCreds: s3Artifact.UseSdkCreds,
-		Bucket:      s3Artifact.Bucket,
-		Key:         s3Artifact.Key,
+	logging.RequireLoggerFromContext(ctx).WithFields(logging.Fields{
+		"input":  configYAML,
+		"output": config,
+	}).Debug(ctx, "Parsed plugin configuration")
+
+	return &config, nil
+}
+
+func DriverAndArtifactFromConfig(ctx context.Context, configYaml string, key string) (*ArtifactDriver, *wfv1.Artifact, error) {
+	pluginConfig, err := parsePluginConfiguration(ctx, configYaml)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	artifact := createArgoArtifactFromConfig(pluginConfig, key)
+	driver, err := getArtifactDriver(ctx, pluginConfig)
+
+	return driver, artifact, err
+}
+
+func createArgoArtifactFromConfig(pluginConfig *wfv1.S3Bucket, key string) *wfv1.Artifact {
+	return &wfv1.Artifact{
+		ArtifactLocation: wfv1.ArtifactLocation{
+			S3: &wfv1.S3Artifact{
+				S3Bucket: *pluginConfig,
+				Key:      key,
+			},
+		},
 	}
 }
 
-// ResolveCredentials resolves credentials from Kubernetes secrets
-func ResolveCredentials(ctx context.Context, s3Artifact *artifact.S3Artifact) (*S3Config, error) {
-	config := extractS3Config(s3Artifact)
-	if config == nil {
-		return nil, fmt.Errorf("invalid S3 configuration")
+func getArtifactDriver(ctx context.Context, pluginConfig *wfv1.S3Bucket) (*ArtifactDriver, error) {
+	// Create base ArtifactDriver from plugin config
+	driver := &ArtifactDriver{
+		Endpoint:    pluginConfig.Endpoint,
+		Region:      pluginConfig.Region,
+		Secure:      pluginConfig.Insecure == nil || !*pluginConfig.Insecure, // Insecure is inverted to Secure
+		RoleARN:     pluginConfig.RoleARN,
+		UseSDKCreds: pluginConfig.UseSDKCreds,
 	}
 
 	// If UseSDKCreds is true, we don't need to resolve any secrets
-	if config.UseSDKCreds {
-		return config, nil
+	if pluginConfig.UseSDKCreds {
+		return driver, nil
 	}
 
 	// Create Kubernetes client
@@ -66,33 +81,35 @@ func ResolveCredentials(ctx context.Context, s3Artifact *artifact.S3Artifact) (*
 	}
 
 	// Resolve access key
-	if s3Artifact.AccessKeySecretName != "" && s3Artifact.AccessKeySecretKey != "" {
-		accessKey, err := getSecretValue(ctx, clientset, s3Artifact.AccessKeySecretName, s3Artifact.AccessKeySecretKey)
+	if pluginConfig.AccessKeySecret != nil {
+		accessKey, err := getSecretValue(ctx, clientset, pluginConfig.AccessKeySecret.Name, pluginConfig.AccessKeySecret.Key)
 		if err != nil {
 			return nil, fmt.Errorf("failed to resolve access key: %w", err)
 		}
-		config.AccessKey = accessKey
+		driver.AccessKey = accessKey
 	}
 
 	// Resolve secret key
-	if s3Artifact.SecretKeySecretName != "" && s3Artifact.SecretKeySecretKey != "" {
-		secretKey, err := getSecretValue(ctx, clientset, s3Artifact.SecretKeySecretName, s3Artifact.SecretKeySecretKey)
+	if pluginConfig.SecretKeySecret != nil {
+		secretKey, err := getSecretValue(ctx, clientset, pluginConfig.SecretKeySecret.Name, pluginConfig.SecretKeySecret.Key)
 		if err != nil {
 			return nil, fmt.Errorf("failed to resolve secret key: %w", err)
 		}
-		config.SecretKey = secretKey
+		driver.SecretKey = secretKey
 	}
 
 	// Resolve session token (optional)
-	if s3Artifact.SessionTokenSecretName != "" && s3Artifact.SessionTokenSecretKey != "" {
-		sessionToken, err := getSecretValue(ctx, clientset, s3Artifact.SessionTokenSecretName, s3Artifact.SessionTokenSecretKey)
+	if pluginConfig.SessionTokenSecret != nil {
+		sessionToken, err := getSecretValue(ctx, clientset, pluginConfig.SessionTokenSecret.Name, pluginConfig.SessionTokenSecret.Key)
 		if err != nil {
 			return nil, fmt.Errorf("failed to resolve session token: %w", err)
 		}
-		config.SessionToken = sessionToken
+		driver.SessionToken = sessionToken
 	}
 
-	return config, nil
+	logging.RequireLoggerFromContext(ctx).WithField("driver", driver).Debug(ctx, "Resolved S3 configuration")
+
+	return driver, nil
 }
 
 // getSecretValue retrieves a value from a Kubernetes secret
@@ -124,19 +141,4 @@ func getNamespace() (string, error) {
 		return "", fmt.Errorf("failed to read namespace: %w", err)
 	}
 	return string(namespaceBytes), nil
-}
-
-// CreateArtifactDriver creates an ArtifactDriver from resolved S3 configuration
-func CreateArtifactDriver(config *S3Config) *ArtifactDriver {
-	return &ArtifactDriver{
-		Endpoint:     config.Endpoint,
-		Region:       config.Region,
-		Secure:       config.Secure,
-		AccessKey:    config.AccessKey,
-		SecretKey:    config.SecretKey,
-		SessionToken: config.SessionToken,
-		RoleARN:      config.RoleARN,
-		UseSDKCreds:  config.UseSDKCreds,
-		Context:      context.Background(),
-	}
 }

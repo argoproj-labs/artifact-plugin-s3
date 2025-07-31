@@ -1,4 +1,4 @@
-.PHONY: proto build clean run
+.PHONY: proto build clean run test lint
 
 # Default target
 all: artifact-server
@@ -37,7 +37,7 @@ pkg/artifact/artifact_grpc.pb.go: proto/artifact.proto Makefile
 
 # Build the binary
 artifact-server: lint test pkg/artifact/artifact.pb.go pkg/artifact/artifact_grpc.pb.go main.go
-	@echo "Building artifact plugin server..."
+	@echo "Building S3 artifact plugin server..."
 	@CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -ldflags="-s -w" -o $@ main.go
 
 # Clean build artifacts
@@ -53,16 +53,25 @@ run: artifact-server
 		echo "Usage: make run SOCKET=/path/to/socket"; \
 		exit 1; \
 	fi
-	@echo "Starting artifact plugin server on $(SOCKET)..."
+	@echo "Starting S3 artifact plugin server on $(SOCKET)..."
 	@./artifact-server $(SOCKET)
 
-.PHONY: test
 test:
 	@echo "Running tests..."
 	@go test ./...
 
-.PHONY: lint
 lint:
 	@echo "Running lint..."
 	@go vet ./...
 	@go fmt ./...
+
+DOCKER_TAG ?= latest
+DOCKER_IMAGE ?= alanpipekit/artifact-driver-s3:$(DOCKER_TAG)
+
+docker-build:
+	@echo "Building Docker image..."
+	@docker build -t $(DOCKER_IMAGE) .
+
+docker-push: docker-build
+	@echo "Pushing Docker image..."
+	@docker push $(DOCKER_IMAGE)

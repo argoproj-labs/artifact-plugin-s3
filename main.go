@@ -2,15 +2,18 @@ package main
 
 import (
 	"context"
-	"log"
 	"net"
 	"os"
+	"os/signal"
 	"path/filepath"
+	"syscall"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
+	wfv1 "github.com/argoproj/argo-workflows/v3/pkg/apis/workflow/v1alpha1"
+	"github.com/argoproj/argo-workflows/v3/util/logging"
 	"github.com/pipekit/artifact-plugin-s3/pkg/artifact"
 	"github.com/pipekit/artifact-plugin-s3/pkg/s3"
 )
@@ -19,8 +22,53 @@ type artifactServer struct {
 	artifact.UnimplementedArtifactServiceServer
 }
 
+const (
+	logLevel  = logging.Debug
+	logFormat = logging.JSON
+)
+
+var logger = logging.NewSlogLogger(logLevel, logFormat)
+
+// validatePluginArtifact validates that an artifact has proper plugin configuration
+func validatePluginArtifact(artifact *artifact.Artifact) error {
+	if artifact == nil {
+		return status.Error(codes.InvalidArgument, "artifact is required")
+	}
+
+	if artifact.ArtifactLocation == nil || artifact.ArtifactLocation.Plugin == nil {
+		return status.Error(codes.InvalidArgument, "plugin artifact location is required")
+	}
+
+	if artifact.ArtifactLocation.Plugin.Configuration == "" {
+		return status.Error(codes.InvalidArgument, "plugin configuration is required")
+	}
+
+	return nil
+}
+
+// getDriver extracts and validates plugin configuration from an artifact
+func getDriver(ctx context.Context, artifact *artifact.Artifact) (*s3.ArtifactDriver, *wfv1.Artifact, error) {
+	if err := validatePluginArtifact(artifact); err != nil {
+		return nil, nil, err
+	}
+
+	pluginArtifact := artifact.ArtifactLocation.Plugin
+
+	// Resolve S3 configuration and credentials
+	driver, argoArtifact, err := s3.DriverAndArtifactFromConfig(ctx, pluginArtifact.Configuration, pluginArtifact.Key)
+	if err != nil {
+		return nil, nil, status.Error(codes.Internal, err.Error())
+	}
+
+	logger := logging.RequireLoggerFromContext(ctx)
+	logger.WithField("driver", driver).Info(ctx, "Created S3 driver")
+	logger.WithField("artifact", argoArtifact).Info(ctx, "Created Argo artifact")
+	return driver, argoArtifact, nil
+}
+
 func (s *artifactServer) Load(ctx context.Context, req *artifact.LoadArtifactRequest) (*artifact.LoadArtifactResponse, error) {
-	log.Printf("Load artifact request: %+v", req)
+	ctx = logging.WithLogger(ctx, logger)
+	logger.WithField("request", req).Info(ctx, "Load artifact request")
 
 	if req.InputArtifact == nil {
 		return &artifact.LoadArtifactResponse{
@@ -29,15 +77,7 @@ func (s *artifactServer) Load(ctx context.Context, req *artifact.LoadArtifactReq
 		}, nil
 	}
 
-	if req.InputArtifact.ArtifactLocation == nil || req.InputArtifact.ArtifactLocation.S3 == nil {
-		return &artifact.LoadArtifactResponse{
-			Success: false,
-			Error:   "S3 artifact location is required",
-		}, nil
-	}
-
-	// Resolve S3 configuration and credentials
-	s3Config, err := s3.ResolveCredentials(ctx, req.InputArtifact.ArtifactLocation.S3)
+	driver, argoArtifact, err := getDriver(ctx, req.InputArtifact)
 	if err != nil {
 		return &artifact.LoadArtifactResponse{
 			Success: false,
@@ -45,14 +85,8 @@ func (s *artifactServer) Load(ctx context.Context, req *artifact.LoadArtifactReq
 		}, nil
 	}
 
-	// Create S3 driver
-	driver := s3.CreateArtifactDriver(s3Config)
-
-	// Convert to Argo artifact format
-	argoArtifact := s3.ConvertToArgoArtifact(req.InputArtifact)
-
 	// Load the artifact
-	err = driver.Load(argoArtifact, req.Path)
+	err = driver.Load(ctx, argoArtifact, req.Path)
 	if err != nil {
 		return &artifact.LoadArtifactResponse{
 			Success: false,
@@ -66,30 +100,16 @@ func (s *artifactServer) Load(ctx context.Context, req *artifact.LoadArtifactReq
 }
 
 func (s *artifactServer) OpenStream(req *artifact.OpenStreamRequest, stream artifact.ArtifactService_OpenStreamServer) error {
-	log.Printf("Open stream request: %+v", req)
+	ctx := logging.WithLogger(stream.Context(), logger)
+	logger.WithField("request", req).Info(ctx, "Open stream request")
 
-	if req.Artifact == nil {
-		return status.Error(codes.InvalidArgument, "artifact is required")
-	}
-
-	if req.Artifact.ArtifactLocation == nil || req.Artifact.ArtifactLocation.S3 == nil {
-		return status.Error(codes.InvalidArgument, "S3 artifact location is required")
-	}
-
-	// Resolve S3 configuration and credentials
-	s3Config, err := s3.ResolveCredentials(stream.Context(), req.Artifact.ArtifactLocation.S3)
+	driver, argoArtifact, err := getDriver(ctx, req.Artifact)
 	if err != nil {
-		return status.Error(codes.Internal, err.Error())
+		return err
 	}
-
-	// Create S3 driver
-	driver := s3.CreateArtifactDriver(s3Config)
-
-	// Convert to Argo artifact format
-	argoArtifact := s3.ConvertToArgoArtifact(req.Artifact)
 
 	// Open stream
-	reader, err := driver.OpenStream(argoArtifact)
+	reader, err := driver.OpenStream(ctx, argoArtifact)
 	if err != nil {
 		return status.Error(codes.Internal, err.Error())
 	}
@@ -122,7 +142,8 @@ func (s *artifactServer) OpenStream(req *artifact.OpenStreamRequest, stream arti
 }
 
 func (s *artifactServer) Save(ctx context.Context, req *artifact.SaveArtifactRequest) (*artifact.SaveArtifactResponse, error) {
-	log.Printf("Save artifact request: %+v", req)
+	ctx = logging.WithLogger(ctx, logger)
+	logger.WithField("request", req).Info(ctx, "Save artifact request")
 
 	if req.OutputArtifact == nil {
 		return &artifact.SaveArtifactResponse{
@@ -131,15 +152,7 @@ func (s *artifactServer) Save(ctx context.Context, req *artifact.SaveArtifactReq
 		}, nil
 	}
 
-	if req.OutputArtifact.ArtifactLocation == nil || req.OutputArtifact.ArtifactLocation.S3 == nil {
-		return &artifact.SaveArtifactResponse{
-			Success: false,
-			Error:   "S3 artifact location is required",
-		}, nil
-	}
-
-	// Resolve S3 configuration and credentials
-	s3Config, err := s3.ResolveCredentials(ctx, req.OutputArtifact.ArtifactLocation.S3)
+	driver, argoArtifact, err := getDriver(ctx, req.OutputArtifact)
 	if err != nil {
 		return &artifact.SaveArtifactResponse{
 			Success: false,
@@ -147,14 +160,8 @@ func (s *artifactServer) Save(ctx context.Context, req *artifact.SaveArtifactReq
 		}, nil
 	}
 
-	// Create S3 driver
-	driver := s3.CreateArtifactDriver(s3Config)
-
-	// Convert to Argo artifact format
-	argoArtifact := s3.ConvertToArgoArtifact(req.OutputArtifact)
-
 	// Save the artifact
-	err = driver.Save(req.Path, argoArtifact)
+	err = driver.Save(ctx, req.Path, argoArtifact)
 	if err != nil {
 		return &artifact.SaveArtifactResponse{
 			Success: false,
@@ -168,24 +175,10 @@ func (s *artifactServer) Save(ctx context.Context, req *artifact.SaveArtifactReq
 }
 
 func (s *artifactServer) Delete(ctx context.Context, req *artifact.DeleteArtifactRequest) (*artifact.DeleteArtifactResponse, error) {
-	log.Printf("Delete artifact request: %+v", req)
+	ctx = logging.WithLogger(ctx, logger)
+	logger.WithField("request", req).Info(ctx, "Delete artifact request")
 
-	if req.Artifact == nil {
-		return &artifact.DeleteArtifactResponse{
-			Success: false,
-			Error:   "artifact is required",
-		}, nil
-	}
-
-	if req.Artifact.ArtifactLocation == nil || req.Artifact.ArtifactLocation.S3 == nil {
-		return &artifact.DeleteArtifactResponse{
-			Success: false,
-			Error:   "S3 artifact location is required",
-		}, nil
-	}
-
-	// Resolve S3 configuration and credentials
-	s3Config, err := s3.ResolveCredentials(ctx, req.Artifact.ArtifactLocation.S3)
+	driver, argoArtifact, err := getDriver(ctx, req.Artifact)
 	if err != nil {
 		return &artifact.DeleteArtifactResponse{
 			Success: false,
@@ -193,14 +186,8 @@ func (s *artifactServer) Delete(ctx context.Context, req *artifact.DeleteArtifac
 		}, nil
 	}
 
-	// Create S3 driver
-	driver := s3.CreateArtifactDriver(s3Config)
-
-	// Convert to Argo artifact format
-	argoArtifact := s3.ConvertToArgoArtifact(req.Artifact)
-
 	// Delete the artifact
-	err = driver.Delete(argoArtifact)
+	err = driver.Delete(ctx, argoArtifact)
 	if err != nil {
 		return &artifact.DeleteArtifactResponse{
 			Success: false,
@@ -214,36 +201,18 @@ func (s *artifactServer) Delete(ctx context.Context, req *artifact.DeleteArtifac
 }
 
 func (s *artifactServer) ListObjects(ctx context.Context, req *artifact.ListObjectsRequest) (*artifact.ListObjectsResponse, error) {
-	log.Printf("List objects request: %+v", req)
+	ctx = logging.WithLogger(ctx, logger)
+	logger.WithField("request", req).Info(ctx, "List objects request")
 
-	if req.Artifact == nil {
-		return &artifact.ListObjectsResponse{
-			Error: "artifact is required",
-		}, nil
-	}
-
-	if req.Artifact.ArtifactLocation == nil || req.Artifact.ArtifactLocation.S3 == nil {
-		return &artifact.ListObjectsResponse{
-			Error: "S3 artifact location is required",
-		}, nil
-	}
-
-	// Resolve S3 configuration and credentials
-	s3Config, err := s3.ResolveCredentials(ctx, req.Artifact.ArtifactLocation.S3)
+	driver, argoArtifact, err := getDriver(ctx, req.Artifact)
 	if err != nil {
 		return &artifact.ListObjectsResponse{
 			Error: err.Error(),
 		}, nil
 	}
 
-	// Create S3 driver
-	driver := s3.CreateArtifactDriver(s3Config)
-
-	// Convert to Argo artifact format
-	argoArtifact := s3.ConvertToArgoArtifact(req.Artifact)
-
 	// List objects
-	objects, err := driver.ListObjects(argoArtifact)
+	objects, err := driver.ListObjects(ctx, argoArtifact)
 	if err != nil {
 		return &artifact.ListObjectsResponse{
 			Error: err.Error(),
@@ -256,36 +225,18 @@ func (s *artifactServer) ListObjects(ctx context.Context, req *artifact.ListObje
 }
 
 func (s *artifactServer) IsDirectory(ctx context.Context, req *artifact.IsDirectoryRequest) (*artifact.IsDirectoryResponse, error) {
-	log.Printf("Is directory request: %+v", req)
+	ctx = logging.WithLogger(ctx, logger)
+	logger.WithField("request", req).Info(ctx, "Is directory request")
 
-	if req.Artifact == nil {
-		return &artifact.IsDirectoryResponse{
-			Error: "artifact is required",
-		}, nil
-	}
-
-	if req.Artifact.ArtifactLocation == nil || req.Artifact.ArtifactLocation.S3 == nil {
-		return &artifact.IsDirectoryResponse{
-			Error: "S3 artifact location is required",
-		}, nil
-	}
-
-	// Resolve S3 configuration and credentials
-	s3Config, err := s3.ResolveCredentials(ctx, req.Artifact.ArtifactLocation.S3)
+	driver, argoArtifact, err := getDriver(ctx, req.Artifact)
 	if err != nil {
 		return &artifact.IsDirectoryResponse{
 			Error: err.Error(),
 		}, nil
 	}
 
-	// Create S3 driver
-	driver := s3.CreateArtifactDriver(s3Config)
-
-	// Convert to Argo artifact format
-	argoArtifact := s3.ConvertToArgoArtifact(req.Artifact)
-
 	// Check if it's a directory
-	isDir, err := driver.IsDirectory(argoArtifact)
+	isDir, err := driver.IsDirectory(ctx, argoArtifact)
 	if err != nil {
 		return &artifact.IsDirectoryResponse{
 			Error: err.Error(),
@@ -297,34 +248,86 @@ func (s *artifactServer) IsDirectory(ctx context.Context, req *artifact.IsDirect
 	}, nil
 }
 
-func main() {
-	if len(os.Args) != 2 {
-		log.Fatal("Usage: artifact-server <unix-socket-path>")
-	}
-
-	socketPath := os.Args[1]
-
+// startServer creates and configures the gRPC server with the artifact service,
+// sets up the Unix socket listener, and returns both for the caller to manage.
+// This function handles socket cleanup and directory creation but does not start
+// serving - that's left to the caller.
+func startServer(ctx context.Context, socketPath string) (*grpc.Server, net.Listener, error) {
+	// Remove any existing socket file
 	if err := os.Remove(socketPath); err != nil && !os.IsNotExist(err) {
-		log.Fatalf("Failed to remove existing socket file: %v", err)
+		return nil, nil, err
 	}
 
+	// Ensure the socket directory exists
 	socketDir := filepath.Dir(socketPath)
 	if err := os.MkdirAll(socketDir, 0755); err != nil {
-		log.Fatalf("Failed to create socket directory: %v", err)
+		return nil, nil, err
 	}
 
+	// Create the Unix socket listener
 	listener, err := net.Listen("unix", socketPath)
 	if err != nil {
-		log.Fatalf("Failed to listen on socket %s: %v", socketPath, err)
+		return nil, nil, err
 	}
-	defer listener.Close()
 
+	// Create and configure the gRPC server
 	server := grpc.NewServer()
 	artifact.RegisterArtifactServiceServer(server, &artifactServer{})
 
-	log.Printf("Starting artifact plugin server on %s", socketPath)
+	return server, listener, nil
+}
+
+// parseArgs validates command line arguments and returns the socket path
+func parseArgs(ctx context.Context) string {
+	if len(os.Args) != 2 {
+		logger.WithField("usage", "artifact-server <unix-socket-path>").WithFatal().Error(ctx, "Usage")
+	}
+	return os.Args[1]
+}
+
+// verifySocket checks the socket file was created properly with correct permissions
+func verifySocket(ctx context.Context, socketPath string) {
+	socketInfo, err := os.Stat(socketPath)
+	if err != nil {
+		logger.WithError(err).WithFatal().Error(ctx, "Failed to get socket file info")
+	}
+	logger.WithFields(logging.Fields{
+		"socketPath": socketPath,
+		"mode":       socketInfo.Mode().String(),
+		"size":       socketInfo.Size(),
+	}).Info(ctx, "Unix socket created successfully")
+}
+
+// setupSignalHandling configures graceful shutdown on SIGTERM
+func setupSignalHandling(ctx context.Context, server *grpc.Server) {
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGTERM)
+	go func() {
+		<-sigCh
+		logger.Info(ctx, "Received SIGTERM, shutting down gracefully")
+		server.GracefulStop()
+	}()
+}
+
+func main() {
+	ctx := logging.WithLogger(context.Background(), logger)
+	socketPath := parseArgs(ctx)
+
+	server, listener, err := startServer(ctx, socketPath)
+	if err != nil {
+		logger.WithError(err).WithFatal().Error(ctx, "Failed to start server")
+	}
+	defer listener.Close()
+
+	verifySocket(ctx, socketPath)
+	logger.WithField("socketPath", socketPath).Info(ctx, "Starting artifact plugin server")
+
+	setupSignalHandling(ctx, server)
+
+	// Log when server is ready to accept connections
+	logger.WithField("address", listener.Addr().String()).Info(ctx, "Server ready to accept connections")
 
 	if err := server.Serve(listener); err != nil {
-		log.Fatalf("Failed to serve: %v", err)
+		logger.WithError(err).WithFatal().Error(ctx, "Failed to serve")
 	}
 }
