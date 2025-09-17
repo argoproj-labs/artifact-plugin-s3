@@ -35,11 +35,11 @@ func validatePluginArtifact(artifact *artifact.Artifact) error {
 		return status.Error(codes.InvalidArgument, "artifact is required")
 	}
 
-	if artifact.ArtifactLocation == nil || artifact.ArtifactLocation.Plugin == nil {
+	if artifact.Plugin == nil {
 		return status.Error(codes.InvalidArgument, "plugin artifact location is required")
 	}
 
-	if artifact.ArtifactLocation.Plugin.Configuration == "" {
+	if artifact.Plugin.Configuration == "" {
 		return status.Error(codes.InvalidArgument, "plugin configuration is required")
 	}
 
@@ -52,7 +52,7 @@ func getDriver(ctx context.Context, artifact *artifact.Artifact) (*s3.ArtifactDr
 		return nil, nil, err
 	}
 
-	pluginArtifact := artifact.ArtifactLocation.Plugin
+	pluginArtifact := artifact.Plugin
 
 	// Resolve S3 configuration and credentials
 	driver, argoArtifact, err := s3.DriverAndArtifactFromConfig(ctx, pluginArtifact.Configuration, pluginArtifact.Key)
