@@ -3,26 +3,28 @@
 # Default target
 all: artifact-server
 
+CURL := curl -fsSL
+
 # Download proto files
 proto/google/protobuf/descriptor.proto:
 	@echo "Downloading Google protobuf descriptor.proto..."
 	@mkdir -p proto/google/protobuf
-	@curl -s -o $@ https://raw.githubusercontent.com/protocolbuffers/protobuf/main/src/google/protobuf/descriptor.proto
+	@$(CURL) -o $@ https://raw.githubusercontent.com/protocolbuffers/protobuf/main/src/google/protobuf/descriptor.proto
 
 proto/google/api/annotations.proto:
 	@echo "Downloading Google API annotations.proto..."
 	@mkdir -p proto/google/api
-	@curl -s -o $@ https://raw.githubusercontent.com/googleapis/googleapis/master/google/api/annotations.proto
+	@$(CURL) -o $@ https://raw.githubusercontent.com/googleapis/googleapis/master/google/api/annotations.proto
 
 proto/google/api/http.proto:
 	@echo "Downloading Google API http.proto..."
 	@mkdir -p proto/google/api
-	@curl -s -o $@ https://raw.githubusercontent.com/googleapis/googleapis/master/google/api/http.proto
+	@$(CURL) -o $@ https://raw.githubusercontent.com/googleapis/googleapis/master/google/api/http.proto
 
 proto/artifact.proto: proto/google/protobuf/descriptor.proto proto/google/api/annotations.proto proto/google/api/http.proto
 	@echo "Downloading artifact.proto..."
 	@mkdir -p proto
-	@curl -s -o $@ https://raw.githubusercontent.com/pipekit/argo-workflows/refs/heads/artifact-plugins/pkg/apiclient/artifact/artifact.proto
+	@$(CURL) -o $@ https://raw.githubusercontent.com/pipekit/argo-workflows/refs/heads/artifact-plugins/pkg/apiclient/artifact/artifact.proto
 
 GENERATED_GO := pkg/artifact/artifact.pb.go pkg/artifact/artifact_grpc.pb.go
 # Generate Go code from proto
