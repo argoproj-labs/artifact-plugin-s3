@@ -1,7 +1,10 @@
-# Argo Workflows Artifact Plugin Server
+# Sample Argo Workflows Artifact Plugin Server
+
+This plugin is not maintained or supported.
+It is here as a sample implementation and used to test the Argo Workflows artifact plugin feature.
 
 This is a gRPC server that implements the Argo Workflows artifact service interface.
-It provides a basic implementation of all required artifact operations.
+It provides a basic implementation of all required artifact operations, copied from the builtin S3 artifact driver in the Argo Workflows repository.
 
 ## Prerequisites
 
@@ -67,9 +70,6 @@ The server implements all methods defined in the Argo Workflows artifact service
 - `Delete`: Delete artifacts
 - `ListObjects`: List objects in an artifact location
 - `IsDirectory`: Check if an artifact is a directory
-
-The current implementation provides basic logging and dummy responses.
-In a production environment, you would implement actual artifact storage logic.
 
 ## Docker
 
