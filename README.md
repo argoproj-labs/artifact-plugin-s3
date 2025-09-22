@@ -6,6 +6,8 @@ It is here as a sample implementation and used to test the Argo Workflows artifa
 This is a gRPC server that implements the Argo Workflows artifact service interface.
 It provides a basic implementation of all required artifact operations, copied from the builtin S3 artifact driver in the Argo Workflows repository.
 
+The docker image is published as [ghcr.io/argoproj-labs/artifact-driver-s3](https://github.com/argoproj-labs/artifact-plugin-s3/pkgs/container/artifact-driver-s3).
+
 ## Prerequisites
 
 - Go 1.24.4 or later
