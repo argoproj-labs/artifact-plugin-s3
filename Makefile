@@ -67,7 +67,7 @@ lint: $(GENERATED_GO)
 	@go fmt ./...
 
 DOCKER_TAG ?= latest
-DOCKER_IMAGE ?= alanpipekit/artifact-driver-s3:$(DOCKER_TAG)
+DOCKER_IMAGE ?= ghcr.io/argoproj-labs/artifact-driver-s3:$(DOCKER_TAG)
 
 docker-build: $(GENERATED_GO)
 	@echo "Building Docker image..."
