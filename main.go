@@ -5,7 +5,6 @@ import (
 	"net"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"syscall"
 
 	"google.golang.org/grpc"
@@ -255,12 +254,6 @@ func (s *artifactServer) IsDirectory(ctx context.Context, req *artifact.IsDirect
 func startServer(ctx context.Context, socketPath string) (*grpc.Server, net.Listener, error) {
 	// Remove any existing socket file
 	if err := os.Remove(socketPath); err != nil && !os.IsNotExist(err) {
-		return nil, nil, err
-	}
-
-	// Ensure the socket directory exists
-	socketDir := filepath.Dir(socketPath)
-	if err := os.MkdirAll(socketDir, 0755); err != nil {
 		return nil, nil, err
 	}
 
