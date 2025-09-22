@@ -19,16 +19,14 @@ jobs:
         with:
           github_access_token: ${{ secrets.GITHUB_TOKEN }}
       
-      - name: Setup devenv
-        uses: cachix/devenv-action@v1
-        with:
-          devenv-root: .
+      - name: Install devenv
+        run: nix profile install nixpkgs#devenv
       
       - name: Build
-        run: make artifact-server
+        run: devenv shell -- make artifact-server
       
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
       
       - name: Build Docker image
-        run: make docker-build
+        run: devenv shell -- make docker-build
