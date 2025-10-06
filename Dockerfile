@@ -25,10 +25,12 @@ COPY . .
 RUN make -j 4 artifact-server
 
 # Runtime stage
-FROM scratch
+FROM gcr.io/distroless/static
+
+USER 8737
 
 # Copy the binary from builder stage
-COPY --from=builder /app/artifact-server /artifact-server
+COPY --chown=8737 --from=builder /app/artifact-server /artifact-server
 
 # Set the binary as entrypoint
 ENTRYPOINT ["/artifact-server"]
